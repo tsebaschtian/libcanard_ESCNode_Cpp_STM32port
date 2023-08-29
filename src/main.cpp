@@ -53,7 +53,7 @@ STM32_CAN Can(CAN1, DEF); // Use PA11/12 pins for CAN1.
 /*
   in this example we will use dynamic node allocation if MY_NODE_ID is zero
  */
-#define MY_NODE_ID 0
+#define MY_NODE_ID 53
 
 /*
   our preferred node ID if nobody else has it
@@ -168,11 +168,12 @@ private:
   /*
     data for dynamic node allocation process
   */
-  struct
+  struct dna_data
   {
     uint32_t send_next_node_id_allocation_request_at_ms;
     uint32_t node_id_allocation_unique_id_offset;
-  } DNA;
+  };
+  dna_data DNA;
 
   static struct parameter
   {
@@ -202,7 +203,23 @@ ESCNode::parameter ESCNode::parameters[] = {
  */
 static uint64_t micros64()
 {
-  return (uint64_t)micros();
+  static uint64_t overflowCounter = 0; // Counter for overflows
+  static uint32_t lastMicros = 0;      // To store the last value of micros()
+
+  uint32_t currentMicros = micros();
+
+  // Check for wrap-around
+  if (currentMicros < lastMicros)
+  {
+    overflowCounter++;
+  }
+
+  lastMicros = currentMicros;
+
+  // Convert the current overflow count to microseconds and add the current micros() value
+  uint64_t totalMicros = (static_cast<uint64_t>(overflowCounter) << 32) + currentMicros;
+
+  return totalMicros;
 }
 
 /*
@@ -210,7 +227,7 @@ static uint64_t micros64()
  */
 static uint32_t millis32()
 {
-  return (uint32_t)millis();
+  return static_cast<uint32_t>(millis());
 }
 
 /*
@@ -316,6 +333,7 @@ bool CanardInterface::respond(uint8_t destination_node_id, const Canard::Transfe
  */
 void ESCNode::handle_GetNodeInfo(const CanardRxTransfer &transfer, const uavcan_protocol_GetNodeInfoRequest &req)
 {
+  Serial.println("handle get node info");
   uavcan_protocol_GetNodeInfoResponse node_info_rsp{};
 
   // fill in node name
@@ -456,7 +474,7 @@ void ESCNode::handle_DNA_Allocation(const CanardRxTransfer &transfer, const uavc
 
   if (transfer.source_node_id == CANARD_BROADCAST_NODE_ID)
   {
-    // Serial.printf("Allocation request from another allocatee\n");
+    Serial.printf("Allocation request from another allocatee\n");
     DNA.node_id_allocation_unique_id_offset = 0;
     return;
   }
@@ -468,7 +486,7 @@ void ESCNode::handle_DNA_Allocation(const CanardRxTransfer &transfer, const uavc
   // Matching the received UID against the local one
   if (memcmp(msg.unique_id.data, my_unique_id, msg.unique_id.len) != 0)
   {
-    // Serial.printf("Mismatching allocation response\n");
+    Serial.printf("Mismatching allocation response\n");
     DNA.node_id_allocation_unique_id_offset = 0;
     // No match, return
     return;
@@ -481,13 +499,13 @@ void ESCNode::handle_DNA_Allocation(const CanardRxTransfer &transfer, const uavc
     DNA.node_id_allocation_unique_id_offset = msg.unique_id.len;
     DNA.send_next_node_id_allocation_request_at_ms -= UAVCAN_PROTOCOL_DYNAMIC_NODE_ID_ALLOCATION_MIN_REQUEST_PERIOD_MS;
 
-    // Serial.printf("Matching allocation response: %d\n", msg.unique_id.len);
+    Serial.printf("Matching allocation response: %d\n", msg.unique_id.len);
   }
   else
   {
     // Allocation complete - copying the allocated node ID from the message
     canard_iface.set_node_id(msg.node_id);
-    // Serial.printf("Node ID allocated: %d\n", msg.node_id);
+    Serial.printf("Node ID allocated: %d\n", msg.node_id);
   }
 }
 
@@ -616,82 +634,87 @@ void CanardInterface::process(uint32_t timeout_msec)
   }
 
   // Receiving
-  const uint32_t start_ms = millis32();
+  // const uint32_t start_ms = millis32();
 
-  CanardCANFrame rx_frame;         // new canard frame for RX
-  static CAN_message_t CAN_RX_msg; // new STM32_CAN frame for receiving, needs to be static
+  CanardCANFrame rx_frame;                                    // new canard frame for RX
+  memset(rx_frame.data, 0x00, CANARD_CAN_FRAME_MAX_DATA_LEN); // fill data with zeros
+  static CAN_message_t CAN_RX_msg;                            // new STM32_CAN frame for receiving, needs to be static
+  const uint64_t timeStamp = micros64();
 
   bool rx_res = Can.read(CAN_RX_msg); // read from can interface
   if (rx_res > 0)
   {
     // translate STM32_CAN frame to canard frame
     rx_frame.id = CAN_RX_msg.id;
-    rx_frame.data_len = CAN_RX_msg.len;
-    rx_frame.iface_id = 0;
     rx_frame.id |= CANARD_CAN_FRAME_EFF;  // Set the EFF bit to 1
     rx_frame.id &= ~CANARD_CAN_FRAME_RTR; // Set the RTR bit to 0
     rx_frame.id &= ~CANARD_CAN_FRAME_ERR; // Set the ERR bit to 0
+    rx_frame.data_len = CAN_RX_msg.len;
+    rx_frame.iface_id = 0;
     memcpy(rx_frame.data, CAN_RX_msg.buf, CAN_RX_msg.len);
 
-    if (false)
+    if (true)
     {
       // Serial output for debug stuff
-      // Serial.print("Channel: ");
-      // Serial.print(CAN_RX_msg.bus);
+      Serial.print("Channel: ");
+      Serial.print(CAN_RX_msg.bus);
       if (CAN_RX_msg.flags.extended == false)
       {
-        // Serial.print(" Standard ID:");
+        Serial.print(" Standard ID:");
       }
       else
       {
-        // Serial.print(" Extended ID:");
+        Serial.print(" Extended ID:");
       }
-      // Serial.print(CAN_RX_msg.id, HEX);
+      Serial.print(CAN_RX_msg.id, HEX);
 
-      // Serial.print(" DLC: ");
-      // Serial.print(CAN_RX_msg.len);
+      Serial.print(" DLC: ");
+      Serial.print(CAN_RX_msg.len);
       if (CAN_RX_msg.flags.remote == false)
       {
-        // Serial.print(" buf: ");
+        Serial.print(" buf: ");
         for (int i = 0; i < CAN_RX_msg.len; i++)
         {
-          // Serial.print("0x");
-          // Serial.print(CAN_RX_msg.buf[i], HEX);
+          Serial.print("0x");
+          Serial.print(CAN_RX_msg.buf[i], HEX);
           if (i != (CAN_RX_msg.len - 1))
           {
-            // Serial.print(" ");
+            Serial.print(" ");
           }
         }
-        // Serial.println();
+        Serial.println();
       }
       else
       {
-        // Serial.println(" Data: REMOTE REQUEST FRAME");
+        Serial.println(" Data: REMOTE REQUEST FRAME");
       }
 
       // same but for canard frame
-      // Serial.print("Canard frame: ");
-      // Serial.print(rx_frame.id, HEX);
+      Serial.print("Canard frame: ");
+      Serial.print(rx_frame.id, HEX);
 
-      // Serial.print(" DLC: ");
-      // Serial.print(rx_frame.data_len);
+      Serial.print(" DLC: ");
+      Serial.print(rx_frame.data_len);
 
-      // Serial.print(" buf: ");
+      Serial.print(" buf: ");
       for (int i = 0; i < rx_frame.data_len; i++)
       {
-        // Serial.print("0x");
-        // Serial.print(rx_frame.data[i], HEX);
+        Serial.print("0x");
+        Serial.print(rx_frame.data[i], HEX);
         if (i != (rx_frame.data_len - 1))
         {
-          // Serial.print(" ");
+          Serial.print(" ");
         }
       }
-      // Serial.println();
+      Serial.println();
     }
+    delay(100);
 
     // handle the received frame
-    int16_t result = canardHandleRxFrame(&canard, &rx_frame, micros64());
-    // // Serial.println(result);
+    Serial.println(timeStamp);
+    delay(100);
+    int16_t result = canardHandleRxFrame(&canard, &rx_frame, timeStamp);
+    Serial.println(result);
   }
 }
 
@@ -700,6 +723,7 @@ void CanardInterface::process(uint32_t timeout_msec)
  */
 void CanardInterface::onTransferReceived(CanardInstance *ins, CanardRxTransfer *transfer)
 {
+  Serial.println("onTransferReceived");
   CanardInterface *iface = (CanardInterface *)ins->user_reference;
   iface->handle_message(*transfer);
 }
@@ -713,8 +737,14 @@ bool CanardInterface::shouldAcceptTransfer(const CanardInstance *ins,
                                            CanardTransferType transfer_type,
                                            uint8_t source_node_id)
 {
+  Serial.println("shouldAcceptTransferBegin");
+  delay(100);
   CanardInterface *iface = (CanardInterface *)ins->user_reference;
-  return iface->accept_message(data_type_id, *out_data_type_signature);
+  bool res = iface->accept_message(data_type_id, *out_data_type_signature);
+  Serial.print("shouldAcceptTransferEnd ");
+  Serial.println(res);
+  delay(100);
+  return res;
 }
 
 /*
@@ -747,41 +777,33 @@ void CanardInterface::init()
   }
   else
   {
-    // Serial.printf("Waiting for DNA node ID allocation\n");
+    Serial.printf("Waiting for DNA node ID allocation\n");
   }
 }
 
 /*
  Initializing the CAN backend driver; in this example we're using SocketCAN
  */
+uint32_t next_1hz_service_at;
+uint32_t next_50hz_service_at;
+
 void ESCNode::start_node()
 {
-  // init the interface
-  canard_iface.init();
+  canard_iface.process(1);
 
-  /*
-    Run the main loop.
-   */
-  uint32_t next_1hz_service_at = millis32();
-  uint32_t next_50hz_service_at = millis32();
+  const uint32_t ts = millis32();
 
-  while (true)
+  // see if we are still doing DNA
+  if (canard_iface.get_node_id() == CANARD_BROADCAST_NODE_ID)
   {
-    canard_iface.process(1);
-
-    const uint32_t ts = millis32();
-
-    // see if we are still doing DNA
-    if (canard_iface.get_node_id() == CANARD_BROADCAST_NODE_ID)
+    // we're still waiting for a DNA allocation of our node ID
+    if (millis32() > DNA.send_next_node_id_allocation_request_at_ms)
     {
-      // we're still waiting for a DNA allocation of our node ID
-      if (millis32() > DNA.send_next_node_id_allocation_request_at_ms)
-      {
-        request_DNA();
-      }
-      continue;
+      request_DNA();
     }
-
+  }
+  else
+  {
     if (ts >= next_1hz_service_at)
     {
       next_1hz_service_at += 1000;
@@ -801,18 +823,21 @@ static ESCNode node;
 /*
   main program
  */
+
 void setup()
 {
   Serial.begin(115200);
   Serial.println();
+  Serial.println();
+
+  // init the interface
+  node.canard_iface.init();
+
+  next_1hz_service_at = millis32();
+  next_50hz_service_at = millis32();
 }
 
 void loop()
 {
-#ifdef __cplusplus
-  Serial.println("cpp defined");
-  int testvar = 100;
-#endif
-
   node.start_node();
 }
