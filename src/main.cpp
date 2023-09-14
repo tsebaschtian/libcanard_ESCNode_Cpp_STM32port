@@ -333,7 +333,7 @@ bool CanardInterface::respond(uint8_t destination_node_id, const Canard::Transfe
  */
 void ESCNode::handle_GetNodeInfo(const CanardRxTransfer &transfer, const uavcan_protocol_GetNodeInfoRequest &req)
 {
-  Serial.println("handle get node info");
+  //Serial.println("handle get node info");
   uavcan_protocol_GetNodeInfoResponse node_info_rsp{};
 
   // fill in node name
@@ -435,7 +435,7 @@ void ESCNode::handle_param_GetSet(const CanardRxTransfer &transfer, const uavcan
   }
 
   param_server.respond(transfer, pkt);
-}
+} 
 
 /*
   handle parameter executeopcode request
